@@ -29,6 +29,15 @@ local function in_active_run()
         and G.GAME.current_round.current_hand
 end
 
+local function is_real_hand_name(name)
+    if type(name) ~= "string" then
+        return false
+    end
+
+    return (G.GAME and G.GAME.hands and G.GAME.hands[name] ~= nil)
+        or (SMODS and SMODS.PokerHands and SMODS.PokerHands[name] ~= nil)
+end
+
 mod.config_tab = function()
     local toggle = create_toggle({
         label = "Reset after each hand",
@@ -86,17 +95,184 @@ local function find_node_by_id(node, target_id)
     return nil
 end
 
+local function is_subset_card_set(subset, full)
+    if type(subset) ~= "table" or type(full) ~= "table" then
+        return false
+    end
+
+    local counts = {}
+
+    for i = 1, #full do
+        counts[full[i]] = (counts[full[i]] or 0) + 1
+    end
+
+    for i = 1, #subset do
+        local card = subset[i]
+        if not counts[card] or counts[card] <= 0 then
+            return false
+        end
+        counts[card] = counts[card] - 1
+    end
+
+    return true
+end
+
+local function get_rank_groups(cards)
+    local groups_by_rank = {}
+    local ordered_groups = {}
+
+    for _, card in ipairs(cards or {}) do
+        local rank = card and card.base and card.base.value
+        if rank ~= nil then
+            if not groups_by_rank[rank] then
+                groups_by_rank[rank] = {}
+                ordered_groups[#ordered_groups + 1] = groups_by_rank[rank]
+            end
+            groups_by_rank[rank][#groups_by_rank[rank] + 1] = card
+        end
+    end
+
+    table.sort(ordered_groups, function(a, b)
+        if #a ~= #b then
+            return #a > #b
+        end
+        return tostring(a[1].base.value) > tostring(b[1].base.value)
+    end)
+
+    return ordered_groups
+end
+
+local function count_distinct_ranks(cards)
+    local seen = {}
+    local count = 0
+
+    for _, card in ipairs(cards or {}) do
+        local key = card and card.base and card.base.value
+        if key ~= nil and not seen[key] then
+            seen[key] = true
+            count = count + 1
+        end
+    end
+
+    return count
+end
+
+local function normalize_scoring_candidate(hand_name, candidate)
+    if type(candidate) ~= "table" or #candidate == 0 then
+        return candidate
+    end
+
+    local groups = get_rank_groups(candidate)
+    local normalized_name = type(hand_name) == "string" and string.lower(hand_name) or nil
+
+    if normalized_name == "pair" and #groups >= 1 and #groups[1] >= 2 then
+        return {groups[1][1], groups[1][2]}
+    end
+
+    if normalized_name == "two pair" then
+        local pair_groups = {}
+        for _, group in ipairs(groups) do
+            if #group >= 2 then
+                pair_groups[#pair_groups + 1] = group
+            end
+        end
+        if #pair_groups >= 2 then
+            return {
+                pair_groups[1][1], pair_groups[1][2],
+                pair_groups[2][1], pair_groups[2][2]
+            }
+        end
+    end
+
+    if (normalized_name == "three of a kind")
+        and #groups >= 1 and #groups[1] >= 3 then
+        return {groups[1][1], groups[1][2], groups[1][3]}
+    end
+
+    if (normalized_name == "four of a kind")
+        and #groups >= 1 and #groups[1] >= 4 then
+        return {groups[1][1], groups[1][2], groups[1][3], groups[1][4]}
+    end
+
+    return candidate
+end
+
+local function choose_best_scoring_candidate(hand_name, hand_entries, selected_cards)
+    if type(hand_entries) ~= "table" then
+        return nil, nil
+    end
+
+    local best_candidate = nil
+    local best_index = nil
+    local best_len = nil
+    local best_distinct = nil
+
+    for idx, candidate in ipairs(hand_entries) do
+        if type(candidate) == "table"
+            and #candidate > 0
+            and is_subset_card_set(candidate, selected_cards or {}) then
+
+            local normalized_candidate = normalize_scoring_candidate(hand_name, copy_card_list(candidate))
+            local candidate_len = #normalized_candidate
+            local candidate_distinct = count_distinct_ranks(normalized_candidate)
+
+            if not best_candidate then
+                best_candidate = normalized_candidate
+                best_index = idx
+                best_len = candidate_len
+                best_distinct = candidate_distinct
+            else
+                local better = false
+
+                if candidate_len < best_len then
+                    better = true
+                elseif candidate_len == best_len then
+                    if candidate_distinct > best_distinct then
+                        better = true
+                    end
+                end
+
+                if better then
+                    best_candidate = normalized_candidate
+                    best_index = idx
+                    best_len = candidate_len
+                    best_distinct = candidate_distinct
+                end
+            end
+        end
+    end
+
+    if best_candidate then
+        return copy_card_list(best_candidate), best_index
+    end
+
+    if hand_entries[1] then
+        return normalize_scoring_candidate(hand_name, copy_card_list(hand_entries[1])), 1
+    end
+
+    return nil, nil
+end
+
 local function get_available_poker_hands(cards)
     local results = evaluate_poker_hand(cards or {})
     local buttons = {}
 
     for hand_name, hand_entries in pairs(results) do
-        if hand_entries and next(hand_entries) then
-            buttons[#buttons + 1] = {
-                hand_name = hand_name,
-                scoring_hand = hand_entries[1],
-                all_hands = results,
-            }
+        if is_real_hand_name(hand_name)
+            and type(hand_entries) == "table"
+            and next(hand_entries) then
+
+            local best_candidate, best_index =
+                choose_best_scoring_candidate(hand_name, hand_entries, cards or {})
+
+            if best_candidate and #best_candidate > 0 then
+                buttons[#buttons + 1] = {
+                    hand_name = hand_name,
+                    scoring_hand = best_candidate,
+                    candidate_index = best_index,
+                    all_hands = results,
+                }
+            end
         end
     end
 
@@ -146,7 +322,7 @@ local function build_change_hand_menu()
             local button_key = "change_hand_pick_" .. tostring(i)
 
             G.FUNCS[button_key] = function(e)
-                local selected_cards = copy_card_list(G.hand.highlighted or {})
+                local selected_cards = copy_card_list((G.hand and G.hand.highlighted) or {})
                 local current_hand = G.GAME and G.GAME.current_round and G.GAME.current_round.current_hand
 
                 if not current_hand then
@@ -160,7 +336,8 @@ local function build_change_hand_menu()
 
                 current_hand.forced_change_hand = entry.hand_name
                 current_hand.forced_change_selected_cards = selected_cards
-                current_hand.forced_change_hand_cards = entry.scoring_hand
+                current_hand.forced_change_hand_cards = copy_card_list(entry.scoring_hand)
+                current_hand.forced_change_candidate_index = entry.candidate_index
                 current_hand.forced_change_base_hand = default_hand_name
 
                 if not mod.config.reset_after_each_hand
@@ -347,34 +524,13 @@ function create_UIBox_HUD()
     return hud
 end
 
-local function is_subset_card_set(subset, full)
-    if type(subset) ~= "table" or type(full) ~= "table" then
-        return false
-    end
-
-    local counts = {}
-
-    for i = 1, #full do
-        counts[full[i]] = (counts[full[i]] or 0) + 1
-    end
-
-    for i = 1, #subset do
-        local card = subset[i]
-        if not counts[card] or counts[card] <= 0 then
-            return false
-        end
-        counts[card] = counts[card] - 1
-    end
-
-    return true
-end
-
 local function clear_forced_hand(current_hand)
     if not current_hand then return end
 
     current_hand.forced_change_hand = nil
     current_hand.forced_change_selected_cards = nil
     current_hand.forced_change_hand_cards = nil
+    current_hand.forced_change_candidate_index = nil
     current_hand.forced_change_base_hand = nil
 end
 
@@ -390,6 +546,7 @@ function G.FUNCS.get_poker_hand_info(_cards)
     local forced_name = current_hand.forced_change_hand
     local forced_selected_cards = current_hand.forced_change_selected_cards
     local forced_scoring_cards = current_hand.forced_change_hand_cards
+    local forced_candidate_index = current_hand.forced_change_candidate_index
 
     local has_forced = forced_name and forced_selected_cards and forced_scoring_cards
 
@@ -402,6 +559,7 @@ function G.FUNCS.get_poker_hand_info(_cards)
         forced_name = nil
         forced_selected_cards = nil
         forced_scoring_cards = nil
+        forced_candidate_index = nil
         has_forced = false
     end
 
@@ -410,16 +568,20 @@ function G.FUNCS.get_poker_hand_info(_cards)
         if remembered_hand_name then
             local poker_hands = evaluate_poker_hand(_cards)
             local remembered_entries = poker_hands and poker_hands[remembered_hand_name]
+            local remembered_scoring_hand, remembered_candidate_index =
+                choose_best_scoring_candidate(remembered_hand_name, remembered_entries, _cards)
 
-            if remembered_entries and remembered_entries[1] then
+            if remembered_scoring_hand and remembered_candidate_index then
                 current_hand.forced_change_hand = remembered_hand_name
                 current_hand.forced_change_selected_cards = copy_card_list(_cards)
-                current_hand.forced_change_hand_cards = remembered_entries[1]
+                current_hand.forced_change_hand_cards = remembered_scoring_hand
+                current_hand.forced_change_candidate_index = remembered_candidate_index
                 current_hand.forced_change_base_hand = default_text
 
                 forced_name = current_hand.forced_change_hand
                 forced_selected_cards = current_hand.forced_change_selected_cards
                 forced_scoring_cards = current_hand.forced_change_hand_cards
+                forced_candidate_index = current_hand.forced_change_candidate_index
                 has_forced = true
             end
         end
@@ -427,6 +589,38 @@ function G.FUNCS.get_poker_hand_info(_cards)
 
     if has_forced then
         local poker_hands = evaluate_poker_hand(_cards)
+        local hand_entries = poker_hands and poker_hands[forced_name]
+
+        if hand_entries and forced_candidate_index and hand_entries[forced_candidate_index] then
+            local refreshed_candidate =
+                normalize_scoring_candidate(forced_name, copy_card_list(hand_entries[forced_candidate_index]))
+
+            if is_subset_card_set(refreshed_candidate, _cards) then
+                forced_scoring_cards = refreshed_candidate
+                current_hand.forced_change_hand_cards = forced_scoring_cards
+            else
+                local best_candidate, best_index =
+                    choose_best_scoring_candidate(forced_name, hand_entries, _cards)
+
+                if best_candidate and best_index then
+                    forced_scoring_cards = best_candidate
+                    forced_candidate_index = best_index
+                    current_hand.forced_change_hand_cards = forced_scoring_cards
+                    current_hand.forced_change_candidate_index = forced_candidate_index
+                end
+            end
+        elseif hand_entries then
+            local best_candidate, best_index =
+                choose_best_scoring_candidate(forced_name, hand_entries, _cards)
+
+            if best_candidate and best_index then
+                forced_scoring_cards = best_candidate
+                forced_candidate_index = best_index
+                current_hand.forced_change_hand_cards = forced_scoring_cards
+                current_hand.forced_change_candidate_index = forced_candidate_index
+            end
+        end
+
         local scoring_hand = forced_scoring_cards
         local text = forced_name
         local disp_text = forced_name

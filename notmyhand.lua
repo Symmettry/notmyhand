@@ -29,6 +29,15 @@ local function in_active_run()
         and G.GAME.current_round.current_hand
 end
 
+local function is_real_hand_name(name)
+    if type(name) ~= "string" then
+        return false
+    end
+
+    return (G.GAME and G.GAME.hands and G.GAME.hands[name] ~= nil)
+        or (SMODS and SMODS.PokerHands and SMODS.PokerHands[name] ~= nil)
+end
+
 mod.config_tab = function()
     local toggle = create_toggle({
         label = "Reset after each hand",
@@ -249,7 +258,10 @@ local function get_available_poker_hands(cards)
     local buttons = {}
 
     for hand_name, hand_entries in pairs(results) do
-        if hand_entries and next(hand_entries) then
+        if is_real_hand_name(hand_name)
+            and type(hand_entries) == "table"
+            and next(hand_entries) then
+
             local best_candidate, best_index =
                 choose_best_scoring_candidate(hand_name, hand_entries, cards or {})
 

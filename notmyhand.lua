@@ -1,6 +1,71 @@
--- this is shit (we are balling)
+-- this is (the) shit (we are balling)
+
+local mod = SMODS.current_mod
+
+mod.config = mod.config or {
+    reset_after_each_hand = false,
+}
 
 local old_create_UIBox_HUD = create_UIBox_HUD
+local old_get_poker_hand_info = G.FUNCS.get_poker_hand_info
+
+local remembered_hand_choices = {}
+
+local function copy_card_list(cards)
+    local copied = {}
+    for i, card in ipairs(cards or {}) do
+        copied[i] = card
+    end
+    return copied
+end
+
+local function in_active_run()
+    return G
+        and G.STATES
+        and G.STATE
+        and G.STATE ~= G.STATES.MENU
+        and G.GAME
+        and G.GAME.current_round
+        and G.GAME.current_round.current_hand
+end
+
+mod.config_tab = function()
+    local toggle = create_toggle({
+        label = "Reset after each hand",
+        ref_table = mod.config,
+        ref_value = "reset_after_each_hand",
+        callback = function()
+            if mod.config.reset_after_each_hand then
+                remembered_hand_choices = {}
+            end
+        end
+    })
+
+    if in_active_run() then
+        toggle = {
+            n = G.UIT.C,
+            config = {
+                align = "cm",
+                colour = G.C.UI.BACKGROUND_INACTIVE,
+                r = 0.1,
+                padding = 0.08
+            },
+            nodes = { toggle }
+        }
+    end
+
+    return {
+        n = G.UIT.ROOT,
+        config = { align = "cm", padding = 0.1, colour = G.C.CLEAR },
+        nodes = {
+            {
+                n = G.UIT.R,
+                config = { align = "cm", padding = 0.2 },
+                nodes = { toggle }
+            }
+        }
+    }
+end
 
 local function find_node_by_id(node, target_id)
     if type(node) ~= "table" then return nil end
@@ -81,15 +146,30 @@ local function build_change_hand_menu()
             local button_key = "change_hand_pick_" .. tostring(i)
 
             G.FUNCS[button_key] = function(e)
-                local selected_cards = {}
-                for i, card in ipairs(G.hand.highlighted or {}) do
-                    selected_cards[i] = card
+                local selected_cards = copy_card_list(G.hand.highlighted or {})
+                local current_hand = G.GAME and G.GAME.current_round and G.GAME.current_round.current_hand
+
+                if not current_hand then
+                    return
                 end
 
-                G.GAME.current_round.current_hand.forced_change_hand = entry.hand_name
-                G.GAME.current_round.current_hand.forced_change_selected_cards = selected_cards
-                G.GAME.current_round.current_hand.forced_change_hand_cards = entry.scoring_hand
-                
+                local default_hand_name = nil
+                if old_get_poker_hand_info then
+                    default_hand_name = select(1, old_get_poker_hand_info(selected_cards))
+                end
+
+                current_hand.forced_change_hand = entry.hand_name
+                current_hand.forced_change_selected_cards = selected_cards
+                current_hand.forced_change_hand_cards = entry.scoring_hand
+                current_hand.forced_change_base_hand = default_hand_name
+
+                if not mod.config.reset_after_each_hand
+                    and default_hand_name
+                    and entry.hand_name
+                    and default_hand_name ~= entry.hand_name then
+                    remembered_hand_choices[default_hand_name] = entry.hand_name
+                end
+
                 if G.hand and G.hand.parse_highlighted then
                     G.hand:parse_highlighted()
                 end
@@ -267,8 +347,6 @@ function create_UIBox_HUD()
     return hud
 end
 
-local old_get_poker_hand_info = G.FUNCS.get_poker_hand_info
-
 local function is_subset_card_set(subset, full)
     if type(subset) ~= "table" or type(full) ~= "table" then
         return false
@@ -291,13 +369,23 @@ local function is_subset_card_set(subset, full)
     return true
 end
 
+local function clear_forced_hand(current_hand)
+    if not current_hand then return end
+
+    current_hand.forced_change_hand = nil
+    current_hand.forced_change_selected_cards = nil
+    current_hand.forced_change_hand_cards = nil
+    current_hand.forced_change_base_hand = nil
+end
+
 function G.FUNCS.get_poker_hand_info(_cards)
     local current_hand = G.GAME and G.GAME.current_round and G.GAME.current_round.current_hand
     if not current_hand then
         return old_get_poker_hand_info(_cards)
     end
 
-    local active_selection = (G.hand and G.hand.highlighted) or _cards
+    local default_text, default_loc_disp_text, default_poker_hands, default_scoring_hand, default_disp_text =
+        old_get_poker_hand_info(_cards)
 
     local forced_name = current_hand.forced_change_hand
     local forced_selected_cards = current_hand.forced_change_selected_cards
@@ -309,9 +397,7 @@ function G.FUNCS.get_poker_hand_info(_cards)
         and is_subset_card_set(forced_selected_cards, _cards)
 
     if has_forced and not selection_matches_forced then
-        current_hand.forced_change_hand = nil
-        current_hand.forced_change_selected_cards = nil
-        current_hand.forced_change_hand_cards = nil
+        clear_forced_hand(current_hand)
 
         forced_name = nil
         forced_selected_cards = nil
@@ -319,8 +405,27 @@ function G.FUNCS.get_poker_hand_info(_cards)
         has_forced = false
     end
 
-    if has_forced and selection_matches_forced then
+    if not has_forced and not mod.config.reset_after_each_hand and default_text then
+        local remembered_hand_name = remembered_hand_choices[default_text]
+        if remembered_hand_name then
+            local poker_hands = evaluate_poker_hand(_cards)
+            local remembered_entries = poker_hands and poker_hands[remembered_hand_name]
 
+            if remembered_entries and remembered_entries[1] then
+                current_hand.forced_change_hand = remembered_hand_name
+                current_hand.forced_change_selected_cards = copy_card_list(_cards)
+                current_hand.forced_change_hand_cards = remembered_entries[1]
+                current_hand.forced_change_base_hand = default_text
+
+                forced_name = current_hand.forced_change_hand
+                forced_selected_cards = current_hand.forced_change_selected_cards
+                forced_scoring_cards = current_hand.forced_change_hand_cards
+                has_forced = true
+            end
+        end
+    end
+
+    if has_forced then
         local poker_hands = evaluate_poker_hand(_cards)
         local scoring_hand = forced_scoring_cards
         local text = forced_name
@@ -359,5 +464,12 @@ function G.FUNCS.get_poker_hand_info(_cards)
         return text, loc_disp_text, poker_hands, scoring_hand, disp_text
     end
 
-    return old_get_poker_hand_info(_cards)
+    return default_text, default_loc_disp_text, default_poker_hands, default_scoring_hand, default_disp_text
 end
+
+return {
+    remembered_hand_choices = remembered_hand_choices,
+    clear_remembered_hand_choices = function()
+        remembered_hand_choices = {}
+    end
+}

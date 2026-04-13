@@ -1,0 +1,14 @@
+{
+    "id": "notmyhand",
+    "name": "Not My Hand!",
+    "display_name": "NotMyHand",
+    "author": ["lily"],
+    "description": "Allows selecting preferred poker hand when multiple are available",
+    "prefix": "notmyhand",
+    "main_file": "notmyhand.lua",
+    "priority": 0,
+    "badge_colour": "AA0000",
+    "badge_text_colour": "ffffff",
+    "version": "0.0.1a",
+    "dependencies": ["Steamodded (>=1.0.0~BETA-1531zeebee)"]
+}

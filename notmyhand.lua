@@ -38,6 +38,29 @@ local function is_real_hand_name(name)
         or (SMODS and SMODS.PokerHands and SMODS.PokerHands[name] ~= nil)
 end
 
+local function card_is_face_down(card)
+    if not card then
+        return false
+    end
+    return card.facing == 'back'
+        or card.sprite_facing == 'back'
+        or card.face_down == true
+end
+
+local function selection_has_face_down(cards)
+    for _, card in ipairs(cards or {}) do
+        if card_is_face_down(card) then
+            return true
+        end
+    end
+    return false
+end
+
+local function can_open_change_hand_menu(cards)
+    cards = cards or {}
+    return #cards > 0 and not selection_has_face_down(cards)
+end
+
 mod.config_tab = function()
     local toggle = create_toggle({
         label = "Reset after each hand",
@@ -279,8 +302,73 @@ local function get_available_poker_hands(cards)
     return buttons, results
 end
 
-local function build_change_hand_menu()
-    local highlighted = (G.hand and G.hand.highlighted) or {}
+local function refresh_change_hand_menu()
+    local highlighted = copy_card_list((G.hand and G.hand.highlighted) or {})
+
+    if not G.change_hand_menu then
+        return
+    end
+
+    if not can_open_change_hand_menu(highlighted) then
+        G.change_hand_menu:remove()
+        G.change_hand_menu = nil
+        return
+    end
+
+    G.change_hand_menu:remove()
+    G.change_hand_menu = nil
+
+    local menu_def = build_change_hand_menu()
+    if not menu_def then
+        return
+    end
+
+    G.change_hand_menu = UIBox{
+        definition = menu_def,
+        config = {
+            align = "cm",
+            major = G.HUD,
+            offset = {x = 0, y = 0},
+            bond = "Weak"
+        }
+    }
+end
+
+G.FUNCS.change_hand = function(e)
+    local highlighted = copy_card_list((G.hand and G.hand.highlighted) or {})
+
+    if G.change_hand_menu then
+        G.change_hand_menu:remove()
+        G.change_hand_menu = nil
+    end
+
+    if not can_open_change_hand_menu(highlighted) then
+        return
+    end
+
+    local menu_def = build_change_hand_menu()
+    if not menu_def then
+        return
+    end
+
+    G.change_hand_menu = UIBox{
+        definition = menu_def,
+        config = {
+            align = "cm",
+            major = G.HUD,
+            offset = {x = 0, y = 0},
+            bond = "Weak"
+        }
+    }
+end
+
+function build_change_hand_menu()
+    local highlighted = copy_card_list((G.hand and G.hand.highlighted) or {})
+
+    if not can_open_change_hand_menu(highlighted) then
+        return nil
+    end
+
     local available_hands = get_available_poker_hands(highlighted)
 
     local rows = {}
@@ -342,9 +430,13 @@ local function build_change_hand_menu()
 
                 if not mod.config.reset_after_each_hand
                     and default_hand_name
-                    and entry.hand_name
-                    and default_hand_name ~= entry.hand_name then
-                    remembered_hand_choices[default_hand_name] = entry.hand_name
+                    and entry.hand_name then
+
+                    if default_hand_name == entry.hand_name then
+                        remembered_hand_choices[default_hand_name] = nil
+                    else
+                        remembered_hand_choices[default_hand_name] = entry.hand_name
+                    end
                 end
 
                 if G.hand and G.hand.parse_highlighted then
@@ -453,12 +545,21 @@ G.FUNCS.close_change_hand_menu = function(e)
 end
 
 G.FUNCS.change_hand = function(e)
+    local highlighted = copy_card_list((G.hand and G.hand.highlighted) or {})
+
     if G.change_hand_menu then
         G.change_hand_menu:remove()
         G.change_hand_menu = nil
     end
 
+    if not can_open_change_hand_menu(highlighted) then
+        return
+    end
+
     local menu_def = build_change_hand_menu()
+    if not menu_def then
+        return
+    end
 
     G.change_hand_menu = UIBox{
         definition = menu_def,
@@ -537,6 +638,11 @@ end
 function G.FUNCS.get_poker_hand_info(_cards)
     local current_hand = G.GAME and G.GAME.current_round and G.GAME.current_round.current_hand
     if not current_hand then
+        return old_get_poker_hand_info(_cards)
+    end
+
+    if selection_has_face_down(_cards) then
+        clear_forced_hand(current_hand)
         return old_get_poker_hand_info(_cards)
     end
 
@@ -659,6 +765,24 @@ function G.FUNCS.get_poker_hand_info(_cards)
     end
 
     return default_text, default_loc_disp_text, default_poker_hands, default_scoring_hand, default_disp_text
+end
+
+local old_parse_highlighted = CardArea.parse_highlighted
+function CardArea:parse_highlighted(...)
+    local result = old_parse_highlighted and old_parse_highlighted(self, ...)
+
+    if self == G.hand then
+        local current_hand = G.GAME and G.GAME.current_round and G.GAME.current_round.current_hand
+        local highlighted = copy_card_list((G.hand and G.hand.highlighted) or {})
+
+        if selection_has_face_down(highlighted) and current_hand then
+            clear_forced_hand(current_hand)
+        end
+
+        refresh_change_hand_menu()
+    end
+
+    return result
 end
 
 return {

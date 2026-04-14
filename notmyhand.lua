@@ -302,6 +302,13 @@ local function get_available_poker_hands(cards)
     return buttons, results
 end
 
+function G.FUNCS.close_change_hand_menu()
+    if G.change_hand_menu then
+        G.change_hand_menu:remove()
+        G.change_hand_menu = nil
+    end
+end
+
 local function refresh_change_hand_menu()
     local highlighted = copy_card_list((G.hand and G.hand.highlighted) or {})
 
@@ -337,10 +344,7 @@ end
 G.FUNCS.change_hand = function(e)
     local highlighted = copy_card_list((G.hand and G.hand.highlighted) or {})
 
-    if G.change_hand_menu then
-        G.change_hand_menu:remove()
-        G.change_hand_menu = nil
-    end
+    G.FUNCS.close_change_hand_menu()
 
     if not can_open_change_hand_menu(highlighted) then
         return
@@ -443,10 +447,7 @@ function build_change_hand_menu()
                     G.hand:parse_highlighted()
                 end
 
-                if G.change_hand_menu then
-                    G.change_hand_menu:remove()
-                    G.change_hand_menu = nil
-                end
+                G.FUNCS.close_change_hand_menu()
             end
 
             rows[#rows + 1] = {
@@ -537,20 +538,33 @@ function build_change_hand_menu()
     }
 end
 
-G.FUNCS.close_change_hand_menu = function(e)
-    if G.change_hand_menu then
-        G.change_hand_menu:remove()
-        G.change_hand_menu = nil
+local function wrap_to_close_change_hand_menu(func_name)
+    local old_func = G.FUNCS[func_name]
+    if type(old_func) ~= "function" then
+        return
+    end
+
+    G.FUNCS[func_name] = function(...)
+        G.FUNCS.close_change_hand_menu()
+        return old_func(...)
     end
 end
+
+wrap_to_close_change_hand_menu("play_cards_from_highlighted")
+wrap_to_close_change_hand_menu("discard_cards_from_highlighted")
+wrap_to_close_change_hand_menu("use_card")
+wrap_to_close_change_hand_menu("sell_card")
+wrap_to_close_change_hand_menu("buy_from_shop")
+wrap_to_close_change_hand_menu("reroll_shop")
+wrap_to_close_change_hand_menu("skip_blind")
+wrap_to_close_change_hand_menu("cash_out")
+wrap_to_close_change_hand_menu("sort_hand")
+wrap_to_close_change_hand_menu("toggle_shop")
 
 G.FUNCS.change_hand = function(e)
     local highlighted = copy_card_list((G.hand and G.hand.highlighted) or {})
 
-    if G.change_hand_menu then
-        G.change_hand_menu:remove()
-        G.change_hand_menu = nil
-    end
+    G.FUNCS.close_change_hand_menu()
 
     if not can_open_change_hand_menu(highlighted) then
         return

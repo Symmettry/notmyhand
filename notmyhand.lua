@@ -427,10 +427,9 @@ function build_change_hand_menu()
                 end
 
                 current_hand.forced_change_hand = entry.hand_name
-                current_hand.forced_change_selected_cards = selected_cards
-                current_hand.forced_change_hand_cards = copy_card_list(entry.scoring_hand)
                 current_hand.forced_change_candidate_index = entry.candidate_index
                 current_hand.forced_change_base_hand = default_hand_name
+                current_hand.forced_change_active = true
 
                 if not mod.config.reset_after_each_hand
                     and default_hand_name
@@ -643,10 +642,9 @@ local function clear_forced_hand(current_hand)
     if not current_hand then return end
 
     current_hand.forced_change_hand = nil
-    current_hand.forced_change_selected_cards = nil
-    current_hand.forced_change_hand_cards = nil
     current_hand.forced_change_candidate_index = nil
     current_hand.forced_change_base_hand = nil
+    current_hand.forced_change_active = nil
 end
 
 function G.FUNCS.get_poker_hand_info(_cards)
@@ -664,24 +662,8 @@ function G.FUNCS.get_poker_hand_info(_cards)
         old_get_poker_hand_info(_cards)
 
     local forced_name = current_hand.forced_change_hand
-    local forced_selected_cards = current_hand.forced_change_selected_cards
-    local forced_scoring_cards = current_hand.forced_change_hand_cards
     local forced_candidate_index = current_hand.forced_change_candidate_index
-
-    local has_forced = forced_name and forced_selected_cards and forced_scoring_cards
-
-    local selection_matches_forced = has_forced
-        and is_subset_card_set(forced_selected_cards, _cards)
-
-    if has_forced and not selection_matches_forced then
-        clear_forced_hand(current_hand)
-
-        forced_name = nil
-        forced_selected_cards = nil
-        forced_scoring_cards = nil
-        forced_candidate_index = nil
-        has_forced = false
-    end
+    local has_forced = current_hand.forced_change_active and forced_name
 
     if not has_forced and not mod.config.reset_after_each_hand and default_text then
         local remembered_hand_name = remembered_hand_choices[default_text]
@@ -693,14 +675,11 @@ function G.FUNCS.get_poker_hand_info(_cards)
 
             if remembered_scoring_hand and remembered_candidate_index then
                 current_hand.forced_change_hand = remembered_hand_name
-                current_hand.forced_change_selected_cards = copy_card_list(_cards)
-                current_hand.forced_change_hand_cards = remembered_scoring_hand
                 current_hand.forced_change_candidate_index = remembered_candidate_index
                 current_hand.forced_change_base_hand = default_text
+                current_hand.forced_change_active = true
 
                 forced_name = current_hand.forced_change_hand
-                forced_selected_cards = current_hand.forced_change_selected_cards
-                forced_scoring_cards = current_hand.forced_change_hand_cards
                 forced_candidate_index = current_hand.forced_change_candidate_index
                 has_forced = true
             end
@@ -710,38 +689,35 @@ function G.FUNCS.get_poker_hand_info(_cards)
     if has_forced then
         local poker_hands = evaluate_poker_hand(_cards)
         local hand_entries = poker_hands and poker_hands[forced_name]
+        local scoring_hand = nil
+        local resolved_candidate_index = forced_candidate_index
 
         if hand_entries and forced_candidate_index and hand_entries[forced_candidate_index] then
-            local refreshed_candidate =
+            local candidate =
                 normalize_scoring_candidate(forced_name, copy_card_list(hand_entries[forced_candidate_index]))
 
-            if is_subset_card_set(refreshed_candidate, _cards) then
-                forced_scoring_cards = refreshed_candidate
-                current_hand.forced_change_hand_cards = forced_scoring_cards
-            else
-                local best_candidate, best_index =
-                    choose_best_scoring_candidate(forced_name, hand_entries, _cards)
-
-                if best_candidate and best_index then
-                    forced_scoring_cards = best_candidate
-                    forced_candidate_index = best_index
-                    current_hand.forced_change_hand_cards = forced_scoring_cards
-                    current_hand.forced_change_candidate_index = forced_candidate_index
-                end
+            if is_subset_card_set(candidate, _cards) then
+                scoring_hand = candidate
             end
-        elseif hand_entries then
+        end
+
+        if not scoring_hand and hand_entries then
             local best_candidate, best_index =
                 choose_best_scoring_candidate(forced_name, hand_entries, _cards)
 
             if best_candidate and best_index then
-                forced_scoring_cards = best_candidate
-                forced_candidate_index = best_index
-                current_hand.forced_change_hand_cards = forced_scoring_cards
-                current_hand.forced_change_candidate_index = forced_candidate_index
+                scoring_hand = best_candidate
+                resolved_candidate_index = best_index
             end
         end
 
-        local scoring_hand = forced_scoring_cards
+        if not scoring_hand then
+            clear_forced_hand(current_hand)
+            return default_text, default_loc_disp_text, default_poker_hands, default_scoring_hand, default_disp_text
+        end
+
+        current_hand.forced_change_candidate_index = resolved_candidate_index
+
         local text = forced_name
         local disp_text = forced_name
 
@@ -758,19 +734,6 @@ function G.FUNCS.get_poker_hand_info(_cards)
         elseif _hand and _hand.modify_display_text and type(_hand.modify_display_text) == 'function' then
             disp_text = _hand:modify_display_text(_cards, scoring_hand) or disp_text
         end
-
-        local flags = SMODS.calculate_context({
-            evaluate_poker_hand = true,
-            full_hand = _cards,
-            scoring_hand = scoring_hand,
-            scoring_name = text,
-            poker_hands = poker_hands,
-            display_name = disp_text
-        })
-
-        text = flags.replace_scoring_name or text
-        disp_text = flags.replace_display_name or flags.replace_scoring_name or disp_text
-        poker_hands = flags.replace_poker_hands or poker_hands
 
         local loc_disp_text = localize(disp_text, 'poker_hands')
         loc_disp_text = loc_disp_text == 'ERROR' and disp_text or loc_disp_text
